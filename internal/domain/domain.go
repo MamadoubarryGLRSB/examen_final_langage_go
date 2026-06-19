@@ -25,6 +25,7 @@ type Summary struct {
 type Batch struct {
 	ID        string        `json:"batch_id"`
 	CreatedAt time.Time     `json:"created_at"`
+	Status    string        `json:"status,omitempty"`
 	Results   []CheckResult `json:"results"`
 	Summary   Summary       `json:"summary"`
 }
@@ -49,6 +50,12 @@ const (
 	MaxTimeoutMS     = 30000
 
 	MaxURLs = 100
+
+	StatusPending = "pending"
+	StatusDone    = "done"
+
+	DefaultListLimit = 20
+	MaxListLimit     = 100
 )
 
 type Checker interface {
@@ -58,6 +65,20 @@ type Checker interface {
 type Store interface {
 	Save(ctx context.Context, b Batch) error
 	Get(ctx context.Context, id string) (Batch, error)
+	List(ctx context.Context, p ListParams) (ListResult, error)
+}
+
+type ListParams struct {
+	Status string
+	Page   int
+	Limit  int
+}
+
+type ListResult struct {
+	Items []Batch `json:"items"`
+	Page  int     `json:"page"`
+	Limit int     `json:"limit"`
+	Total int     `json:"total"`
 }
 
 var ErrBatchNotFound = errors.New("batch not found")
