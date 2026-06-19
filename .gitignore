@@ -1,0 +1,33 @@
+# Binaires compilés (uniquement à la racine du projet)
+/urlwatch
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Fichiers de test et couverture
+*.test
+*.out
+coverage.html
+
+# Bases de données locales
+*.db
+*.sqlite
+*.sqlite3
+
+# Fichiers d'environnement avec secrets
+.env
+.env.local
+
+# Dossiers de l'IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Dépendances vendorisées
+vendor/
