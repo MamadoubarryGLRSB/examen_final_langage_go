@@ -19,7 +19,14 @@ func main() {
 
 	// branchement des dépendances
 	chk := checker.New()
-	st := store.NewMemory()
+	st, err := store.NewFromEnv()
+	if err != nil {
+		logger.Error("store init failed", "err", err)
+		os.Exit(1)
+	}
+	if closer, ok := st.(interface{ Close() error }); ok {
+		defer closer.Close()
+	}
 	handler := api.NewHandler(chk, st)
 	router := api.NewRouter(handler, logger)
 
