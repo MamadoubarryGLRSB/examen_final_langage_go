@@ -9,6 +9,7 @@ func NewRouter(h *Handler, logger *slog.Logger) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("POST /v1/checks", h.PostChecks)
+	mux.HandleFunc("GET /v1/checks", h.ListChecks)
 	mux.HandleFunc("GET /v1/checks/{id}", h.GetCheck)
 	mux.HandleFunc("GET /healthz", Healthz)
 

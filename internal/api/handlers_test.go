@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/MamadoubarryGLRSB/urlwatch/internal/api"
 	"github.com/MamadoubarryGLRSB/urlwatch/internal/checker"
@@ -128,17 +129,72 @@ func TestGetCheckNotFound(t *testing.T) {
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("attendu 404, reçu %d", rr.Code)
 	}
+}
 
-	var body struct {
-		Error struct {
-			Code string `json:"code"`
-		} `json:"error"`
+func TestPostChecksAsync(t *testing.T) {
+	h := newTestHandler(map[string]domain.CheckResult{
+		"https://go.dev": {OK: true, StatusCode: 200, LatencyMS: 10},
+	})
+
+	body := `{"urls":["https://go.dev"],"options":{"concurrency":1,"timeout_ms":1000}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/checks?async=true", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	h.PostChecks(rr, req)
+
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("attendu 202, reçu %d", rr.Code)
 	}
-	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
-		t.Fatalf("réponse non décodable : %v", err)
+
+	var resp struct {
+		BatchID string `json:"batch_id"`
+		Status  string `json:"status"`
 	}
-	if body.Error.Code != "batch_not_found" {
-		t.Errorf("code attendu batch_not_found, reçu %q", body.Error.Code)
+	_ = json.NewDecoder(rr.Body).Decode(&resp)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		getReq := httptest.NewRequest(http.MethodGet, "/v1/checks/"+resp.BatchID, nil)
+		getReq.SetPathValue("id", resp.BatchID)
+		getRR := httptest.NewRecorder()
+		h.GetCheck(getRR, getReq)
+
+		var batch domain.Batch
+		_ = json.NewDecoder(getRR.Body).Decode(&batch)
+		if batch.Status == domain.StatusDone {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("le lot async n'est pas passé à done")
+}
+
+func TestListChecks(t *testing.T) {
+	h := newTestHandler(map[string]domain.CheckResult{
+		"https://go.dev": {OK: true, StatusCode: 200},
+	})
+
+	body := `{"urls":["https://go.dev"],"options":{"concurrency":1,"timeout_ms":1000}}`
+	postReq := httptest.NewRequest(http.MethodPost, "/v1/checks", bytes.NewBufferString(body))
+	postReq.Header.Set("Content-Type", "application/json")
+	postRR := httptest.NewRecorder()
+	h.PostChecks(postRR, postReq)
+
+	listReq := httptest.NewRequest(http.MethodGet, "/v1/checks?page=1&limit=10", nil)
+	listRR := httptest.NewRecorder()
+	h.ListChecks(listRR, listReq)
+
+	if listRR.Code != http.StatusOK {
+		t.Fatalf("attendu 200, reçu %d", listRR.Code)
+	}
+
+	var result domain.ListResult
+	if err := json.NewDecoder(listRR.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Total < 1 {
+		t.Errorf("total attendu >= 1, reçu %d", result.Total)
 	}
 }
 
@@ -158,4 +214,7 @@ type mockStore struct{}
 func (m *mockStore) Save(_ context.Context, _ domain.Batch) error { return nil }
 func (m *mockStore) Get(_ context.Context, _ string) (domain.Batch, error) {
 	return domain.Batch{}, domain.ErrBatchNotFound
+}
+func (m *mockStore) List(_ context.Context, _ domain.ListParams) (domain.ListResult, error) {
+	return domain.ListResult{Items: []domain.Batch{}}, nil
 }

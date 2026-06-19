@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/MamadoubarryGLRSB/urlwatch/internal/domain"
@@ -47,24 +48,15 @@ func (h *Handler) PostChecks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// timeout global du lot
-	batchTimeout := time.Duration(req.Options.TimeoutMS)*time.Millisecond*
-		time.Duration(len(req.URLs)/req.Options.Concurrency+1) + 5*time.Second
-	if batchTimeout > 60*time.Second {
-		batchTimeout = 60 * time.Second
+	if r.URL.Query().Get("async") == "true" {
+		h.postChecksAsync(w, r, req)
+		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), batchTimeout)
-	defer cancel()
 
-	start := time.Now()
-	results := pool.Run(ctx, h.checker, req.URLs, req.Options)
-	durationMS := time.Since(start).Milliseconds()
-
-	batch := domain.Batch{
-		ID:        newBatchID(),
-		CreatedAt: time.Now().UTC(),
-		Results:   results,
-		Summary:   domain.AggregateSummary(results, durationMS),
+	batch, err := h.runBatch(r.Context(), req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "impossible de traiter le lot")
+		return
 	}
 
 	if err := h.store.Save(r.Context(), batch); err != nil {
@@ -74,6 +66,61 @@ func (h *Handler) PostChecks(w http.ResponseWriter, r *http.Request) {
 
 	setLogBatchID(r, batch.ID)
 	writeJSON(w, http.StatusCreated, batch)
+}
+
+func (h *Handler) postChecksAsync(w http.ResponseWriter, r *http.Request, req domain.CheckRequest) {
+	batch := domain.Batch{
+		ID:        newBatchID(),
+		CreatedAt: time.Now().UTC(),
+		Status:    domain.StatusPending,
+		Results:   []domain.CheckResult{},
+	}
+
+	if err := h.store.Save(r.Context(), batch); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "impossible de sauvegarder le lot")
+		return
+	}
+
+	setLogBatchID(r, batch.ID)
+
+	// le traitement continue en arrière-plan
+	go func() {
+		done, err := h.runBatch(context.Background(), req)
+		if err != nil {
+			return
+		}
+		done.ID = batch.ID
+		done.CreatedAt = batch.CreatedAt
+		done.Status = domain.StatusDone
+		_ = h.store.Save(context.Background(), done)
+	}()
+
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"batch_id":   batch.ID,
+		"status":     domain.StatusPending,
+		"created_at": batch.CreatedAt,
+	})
+}
+
+func (h *Handler) runBatch(ctx context.Context, req domain.CheckRequest) (domain.Batch, error) {
+	batchTimeout := time.Duration(req.Options.TimeoutMS)*time.Millisecond*
+		time.Duration(len(req.URLs)/req.Options.Concurrency+1) + 5*time.Second
+	if batchTimeout > 60*time.Second {
+		batchTimeout = 60 * time.Second
+	}
+	runCtx, cancel := context.WithTimeout(ctx, batchTimeout)
+	defer cancel()
+
+	start := time.Now()
+	results := pool.Run(runCtx, h.checker, req.URLs, req.Options)
+	durationMS := time.Since(start).Milliseconds()
+
+	return domain.Batch{
+		ID:        newBatchID(),
+		CreatedAt: time.Now().UTC(),
+		Results:   results,
+		Summary:   domain.AggregateSummary(results, durationMS),
+	}, nil
 }
 
 func (h *Handler) GetCheck(w http.ResponseWriter, r *http.Request) {
@@ -101,6 +148,37 @@ func (h *Handler) GetCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, batch)
+}
+
+func (h *Handler) ListChecks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "méthode non autorisée")
+		return
+	}
+
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	if page < 1 {
+		page = 1
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit < 1 {
+		limit = domain.DefaultListLimit
+	}
+	if limit > domain.MaxListLimit {
+		limit = domain.MaxListLimit
+	}
+
+	result, err := h.store.List(r.Context(), domain.ListParams{
+		Status: r.URL.Query().Get("status"),
+		Page:   page,
+		Limit:  limit,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "erreur interne")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
 }
 
 func Healthz(w http.ResponseWriter, r *http.Request) {
