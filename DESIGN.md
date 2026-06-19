@@ -45,3 +45,15 @@ Le sujet demande de la concurrence, un microservice backend et une gestion propr
 4. **Un seul binaire** : `go build` produit un exécutable autonome, facile à lancer et à tester en local.
 
 **Limite ressentie** : pour des agrégations plus complexes, Go est un peu plus verbeux qu'en Python ou Rust. Ici `AggregateSummary` avec une `map[bool]int` suffit, mais sur un projet plus gros ça se sentirait.
+
+## Bonus
+
+**SQLite** : `internal/store/sqlite.go` implémente la même interface `Store` avec `database/sql`. J'ai pas pris GORM parce que le schéma est simple (une table, les résultats en JSON). Le driver `modernc.org/sqlite` évite CGO, pratique pour Docker.
+
+**Async** : `POST /v1/checks?async=true` sauvegarde un lot `pending` et renvoie `202`. Le pool tourne en goroutine, puis le lot passe à `done`.
+
+**Liste** : `GET /v1/checks` avec `page`, `limit` et filtre `status`. Implémenté sur memory et sqlite via `Store.List`.
+
+**Arrêt gracieux** : déjà dans `main.go` avec `signal` + `Server.Shutdown`.
+
+**Docker** : Dockerfile multi-stage, binaire statique sans CGO.

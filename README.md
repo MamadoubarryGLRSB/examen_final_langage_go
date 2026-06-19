@@ -2,114 +2,136 @@
 
 Microservice de vérification d'URLs en masse. Un client envoie un lot d'URLs, le service les vérifie en parallèle (code HTTP, latence, disponibilité), agrège les résultats et les expose via une API REST.
 
-**Prérequis** : Go 1.22 ou supérieur.
+**Prérequis** : Go 1.22 ou supérieur, Docker (optionnel, pour le bonus).
 
-## Build
+---
+
+## Guide rapide pour la correction
+
+### 1. Vérifier que le projet compile et que les tests passent
 
 ```bash
 go build ./...
 go vet ./...
-```
-
-## Lancer le serveur
-
-```bash
-go run ./cmd/urlwatch
-```
-
-Le service écoute sur `http://localhost:8080` par défaut. Aucune configuration n'est obligatoire.
-
-Pour lancer :
-
-```bash
-go run ./cmd/urlwatch
-```
-
-Si besoin, on peut passer deux variables dans le terminal (pas de secrets, juste de la config locale, voir `.env.example`) :
-
-- `LISTEN_ADDR` pour changer le port (défaut `:8080`)
-- `LOG_LEVEL` pour le niveau de log : `debug`, `info`, `warn` ou `error`
-
-Exemple :
-
-```bash
-LISTEN_ADDR=:9090 LOG_LEVEL=debug go run ./cmd/urlwatch
-```
-
-Aucune clé ni token n'est utilisé dans ce projet.
-
-## Tests
-
-```bash
 go test ./...
 go test -race ./...
 ```
 
-## Tester l'API
+### 2. Lancer le serveur (mode par défaut, mémoire)
 
-Les exemples ci-dessous fonctionnent avec Postman ou curl. Le serveur doit être lancé au préalable.
+Rien à configurer, ça suffit pour tester le socle du sujet :
 
-### GET /healthz — Sonde de vivacité
+```bash
+go run ./cmd/urlwatch
+```
+
+Le service écoute sur `http://localhost:8080`.
+
+### 3. Lancer avec SQLite (bonus persistance)
+
+Dans un autre terminal, une fois le serveur lancé :
+
+```bash
+STORE=sqlite SQLITE_PATH=urlwatch.db go run ./cmd/urlwatch
+```
+
+Les lots sont sauvegardés dans le fichier `urlwatch.db` à la racine du projet.
+
+### 4. Lancer avec Docker (bonus)
+
+```bash
+docker build -t urlwatch .
+docker run -p 8080:8080 urlwatch
+```
+
+L'image utilise SQLite par défaut. Le service est accessible sur `http://localhost:8080`.
+
+### 5. Tester l'API
+
+Avec le serveur lancé (étape 2, 3 ou 4) :
+
+```bash
+# Vivacité
+curl http://localhost:8080/healthz
+
+# Créer un lot (réponse 201)
+curl -s -X POST http://localhost:8080/v1/checks \
+  -H "Content-Type: application/json" \
+  -d '{"urls":["https://go.dev","https://exemple.invalid"],"options":{"concurrency":4,"timeout_ms":2000}}'
+
+# Relire un lot (remplacer b_xxxxx par le batch_id reçu)
+curl -s http://localhost:8080/v1/checks/b_xxxxx
+```
+
+Les exemples détaillés (erreurs 404/400, mode async, liste) sont plus bas.
+
+---
+
+## Variables d'environnement
+
+Toutes optionnelles. Voir aussi `.env.example`.
+
+| Variable | Défaut | Rôle |
+|----------|--------|------|
+| `LISTEN_ADDR` | `:8080` | Port d'écoute |
+| `LOG_LEVEL` | `info` | Niveau de log (`debug`, `info`, `warn`, `error`) |
+| `STORE` | `memory` | `memory` ou `sqlite` |
+| `SQLITE_PATH` | `urlwatch.db` | Fichier SQLite si `STORE=sqlite` |
+
+Aucun secret (clé, token) n'est utilisé dans ce projet.
+
+---
+
+## Routes
+
+| Méthode | Route | Description |
+|---------|-------|-------------|
+| POST | `/v1/checks` | Crée et exécute un lot |
+| GET | `/v1/checks/{id}` | Récupère un lot par son id |
+| GET | `/healthz` | Sonde de vivacité |
+| POST | `/v1/checks?async=true` | Lot en arrière-plan, réponse 202 (bonus) |
+| GET | `/v1/checks` | Liste des lots avec pagination (bonus) |
+
+---
+
+## Tester l'API en détail
+
+Le serveur doit tourner avant de lancer ces requêtes (Postman ou curl).
+
+### GET /healthz
 
 ```
 GET http://localhost:8080/healthz
 ```
 
-Réponse attendue : `200` avec `{"status":"ok"}`.
+Réponse : `200` avec `{"status":"ok"}`.
 
-### POST /v1/checks — Créer et exécuter un lot
-
-```
-POST http://localhost:8080/v1/checks
-Content-Type: application/json
-```
+### POST /v1/checks
 
 ```json
 {
   "urls": ["https://go.dev", "https://exemple.invalid"],
-  "options": {
-    "concurrency": 4,
-    "timeout_ms": 2000
-  }
+  "options": { "concurrency": 4, "timeout_ms": 2000 }
 }
 ```
 
-Réponse attendue : `201 Created` avec `batch_id`, `summary` et `results`.
+Réponse : `201 Created` avec `batch_id`, `summary` et `results`.
 
-Exemple avec curl :
+### GET /v1/checks/{id}
 
-```bash
-curl -s -X POST http://localhost:8080/v1/checks \
-  -H "Content-Type: application/json" \
-  -d '{"urls":["https://go.dev","https://exemple.invalid"],"options":{"concurrency":4,"timeout_ms":2000}}'
-```
+Remplacer `{id}` par le `batch_id` du POST.
 
-### GET /v1/checks/{id} — Relire un lot
+Réponse : `200` avec le lot, ou `404` si l'id est inconnu.
 
-```
-GET http://localhost:8080/v1/checks/b_4f3c1a
-```
-
-Remplacer `b_4f3c1a` par le `batch_id` reçu au POST.
-
-Réponse attendue : `200` avec le lot complet, ou `404` si l'identifiant est inconnu.
+### Erreur 404
 
 ```bash
 curl -s http://localhost:8080/v1/checks/b_inconnu
 ```
 
-Réponse attendue : `404` avec :
+Réponse : `404` avec `"code": "batch_not_found"`.
 
-```json
-{
-  "error": {
-    "code": "batch_not_found",
-    "message": "aucun lot avec l'id b_inconnu"
-  }
-}
-```
-
-### Erreur de validation
+### Erreur 400 (validation)
 
 ```bash
 curl -s -X POST http://localhost:8080/v1/checks \
@@ -117,28 +139,40 @@ curl -s -X POST http://localhost:8080/v1/checks \
   -d '{"urls":[],"options":{"concurrency":4,"timeout_ms":2000}}'
 ```
 
-Réponse attendue : `400` avec le code `invalid_request`.
+Réponse : `400` avec `"code": "invalid_request"`.
 
-## Routes
+### Bonus : mode asynchrone
 
-| Méthode | Route | Description |
-|---------|-------|-------------|
-| POST | `/v1/checks` | Crée et exécute un lot de vérifications |
-| GET | `/v1/checks/{id}` | Récupère un lot existant |
-| GET | `/healthz` | Sonde de vivacité |
+```bash
+curl -s -X POST "http://localhost:8080/v1/checks?async=true" \
+  -H "Content-Type: application/json" \
+  -d '{"urls":["https://go.dev"],"options":{"concurrency":2,"timeout_ms":2000}}'
+```
+
+Réponse : `202 Accepted` avec `status: pending`. Relancer le GET sur le `batch_id` jusqu'à voir `status: done`.
+
+### Bonus : liste des lots
+
+```
+GET http://localhost:8080/v1/checks?page=1&limit=10&status=done
+```
+
+Paramètres optionnels : `page`, `limit`, `status` (`pending` ou `done`).
+
+---
 
 ## Structure du projet
 
 ```
-cmd/urlwatch/       Point d'entrée, assemblage des dépendances
-internal/domain/    Types métier, interfaces, validation
-internal/checker/   Vérification HTTP + mock pour les tests
-internal/pool/      Worker pool borné (fan-out / fan-in)
-internal/store/     Persistance en mémoire
-internal/api/       Handlers REST, middleware logging et recovery
+cmd/urlwatch/       Point d'entrée
+internal/domain/    Types, interfaces, validation
+internal/checker/   Vérification HTTP + mock
+internal/pool/      Worker pool (fan-out / fan-in)
+internal/store/     Mémoire ou SQLite
+internal/api/       Handlers REST, middleware
 ```
 
 ## Documents complémentaires
 
-- `DESIGN.md` : choix d'architecture et justification technique
-- `JOURNAL_IA.md` : usage de l'IA dans ce projet
+- `DESIGN.md` : architecture et choix techniques
+- `JOURNAL_IA.md` : usage de l'IA
